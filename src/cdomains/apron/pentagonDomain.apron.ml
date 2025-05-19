@@ -11,44 +11,121 @@ open GobApron
 
 module Mpqf = SharedFunctions.Mpqf
 
-(** [VarManagement] defines the type t of the affine equality domain (a record that contains an optional matrix and an apron environment) and provides the functions needed for handling variables (which are defined by [RelationDomain.D2]) such as [add_vars], [remove_vars].
-    Furthermore, it provides the function [simplified_monomials_from_texp] that converts an apron expression into a list of monomials of reference variables and a constant offset *)
-module VarManagement =
-struct
-  type t = T (** TODO Change this type *)
+
+module Inequalities = struct
+  module VarMap = BatMap.Make(Int)
+  module VarSet = BatSet.Make(Int)
+
+  type t =  (VarSet.t VarMap.t) [@@deriving eq, ord]
+  let hash : (t -> int)  = fun _ -> failwith "TODO"
+  let copy (x: t) = x
+  let empty () = (VarMap.empty: t)
+  let is_empty ineq  = VarMap.is_empty ineq
+  let dim_add : (Apron.Dim.change -> t -> t)  = fun _ -> failwith "TODO"
+  let dim_remove : (Apron.Dim.change -> t -> del:bool-> t)  = fun _ -> failwith "TODO"
 
 end
 
 
-module ExpressionBounds: (SharedFunctions.ConvBounds with type t = VarManagement.t) =
+module VariableManagement =
 struct
-  include VarManagement
+  include SharedFunctions.VarManagementOps (Inequalities)
 
-  let bound_texpr t texpr = failwith "TODO"
+  let get_map_opt t = t.d
 
-  let bound_texpr d texpr1 = Timing.wrap "bounds calculation" (bound_texpr d) texpr1
+  let get_map_default t = BatOption.default (Inequalities.empty ()) t.d
 end
 
 module SUB =
 struct
-  type t = T (*change*)
-  let leq  _  = failwith "TODO"
-  let join  _ = failwith "TODO"
-  let meet  _ = failwith "TODO"
-  let widen  _ = failwith "TODO"
-  let narrow  _ = failwith "TODO"
-  let pretty_dif  _ = failwith "TODO" 
+  module VarMan = VariableManagement
+  module VarMap = Inequalities.VarMap
+  module VarSet = Inequalities.VarSet
+
+  type t = VarMan.t
+
+  let get_map_default_2 s1 s2 = 
+    VarMan.get_map_default s1, VarMan.get_map_default s2
+
+  (** Verify that this is actually top *)
+  let bot () = VarMan.bot ()
+  let is_bot sub = VarMan.equal sub (bot ())
+
+  (** Verify that this is actually top *)
+  let top () = ({ d = Some(Inequalities.empty ()); env = VarMan.empty_env }: t)
+  let is_top (sub: t) = 
+    let sub_map = VarMan.get_map_default sub in    
+    VarMap.for_all (fun _ set -> VarSet.is_empty set) sub_map 
+
+  let subseteq set1 set2 = VarSet.subset set1 set2 || VarSet.equal set1 set2 (** helper, missing in batteries *)
+
+  (**
+     The inequalities map s1 is less than or equal to s2 iff
+      forall x in s2.
+      s2(x) subseteq s1(x)
+  *)
+
+  let leq (sub1: t) (sub2: t) =
+    let sub_map_1, sub_map_2 = get_map_default_2 sub1 sub2 in
+    let subseteq_s1 var_key_2 greater_vars_2 = 
+      let greater_vars_1 = VarMap.find var_key_2 sub_map_1 in
+      subseteq greater_vars_2 greater_vars_1
+    in
+    VarMap.for_all subseteq_s1 sub_map_2
+
+  let join (sub1: t) (sub2: t) = 
+    let sub_map_1, sub_map_2 = get_map_default_2 sub1 sub2 in
+    let intersect_values var_key var_set1_opt var_set2_opt = 
+      match var_set1_opt, var_set2_opt with
+      | Some(var_set1), Some(var_set2) -> Some(VarSet.inter var_set1 var_set2)
+      | None, None -> failwith "This should never happen :)"  
+      | None, s -> s
+      | s, None -> s
+    in
+    VarMap.merge intersect_values sub_map_1 sub_map_2
+
+
+  let meet (sub1: t) (sub2: t) =
+    let sub_map_1, sub_map_2 = get_map_default_2 sub1 sub2 in
+    let union_values var_key var_set1_opt var_set2_opt =
+      match var_set1_opt, var_set2_opt with
+      | Some(var_set1), Some(var_set2) -> Some(VarSet.union var_set1 var_set2)
+      | None, None -> failwith "This should never happen :)"
+      | _ -> None
+    in
+    VarMap.merge union_values sub_map_1 sub_map_2
+
+  let widen (sub1: t) (sub2: t) =
+    let sub_map_1, sub_map_2 = get_map_default_2 sub1 sub2 in
+    let widen_set var_key var_set1_opt var_set2_opt =
+      match var_set1_opt, var_set2_opt with
+      | Some(var_set1), Some(var_set2) ->
+        if subseteq var_set1 var_set2 then Some (var_set2) else Some (VarSet.empty)
+      | None, Some(var_set2) -> Some(var_set2)
+      | None, None -> failwith "This should never happen :)"
+      | _ -> Some (VarSet.empty)
+    in
+    VarMap.merge widen_set sub_map_1 sub_map_2
+
+  (** TODO: No narrowing mentioned in the paper. Can we improve on this? *)
+  let narrow sub1 sub2 = meet sub1 sub2
+
+
 end
 
+(** TODO: Alex *)
 module Intervals = 
 struct
   type t = T (*change*)
-  let leq  _ = failwith "TODO"
-  let join  _ = failwith "TODO"
-  let meet  _ = failwith "TODO"
-  let widen  _ = failwith "TODO"
-  let narrow  _ = failwith "TODO"
-  let pretty_dif  _ = failwith "TODO" 
+  let leq: (t -> t -> bool)  = fun _ -> failwith "TODO"
+  let join: (t -> t -> t) = fun _ -> failwith "TODO"
+  let meet: (t -> t -> t) = fun _ -> failwith "TODO"
+  let widen: (t -> t -> t) = fun _ -> failwith "TODO"
+  let narrow: (t -> t -> t) = fun _ -> failwith "TODO"
+  let bot (): (unit -> t) = fun _ -> failwith "TODO"
+  let is_bot t: (t -> bool) = fun _ -> failwith "TODO"
+  let top (): (unit -> t) = fun _ -> failwith "TODO"
+  let is_top t: (t -> bool) = fun _ -> failwith "TODO"
 end
 
 module type Tracked =
@@ -61,14 +138,12 @@ module D =
 struct
   include Printable.Std
   include RatOps.ConvenienceOps (Mpqf)
-  include VarManagement
 
   module Bounds = ExpressionBounds
   module V = RelationDomain.V
   module Arg = struct
     let allow_global = true
   end
-  module Convert = SharedFunctions.Convert (V) (Bounds) (Arg) (SharedFunctions.Tracked)
 
   module Tracked = struct let varinfo_tracked _ = failwith "TODO";; let type_tracked _ = failwith "TODO";; end
 
